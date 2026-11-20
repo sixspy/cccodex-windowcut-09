@@ -33,9 +33,9 @@ def ingest_event(body: EventIn, authorization: AuthHeader = None):
             created = _now()
             if w["status"] == "已关闭":
                 cur = conn.execute(
-                    """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (None, body.biz_key, ts, body.amount, "迟到桶", created),
+                    """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,generation,created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (None, body.biz_key, ts, body.amount, "迟到桶", None, created),
                 )
                 eid = cur.lastrowid
                 conn.execute(
@@ -63,9 +63,9 @@ def ingest_event(body: EventIn, authorization: AuthHeader = None):
 
             if not (w["open_at"] <= ts <= w["close_at"]):
                 conn.execute(
-                    """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,created_at)
-                       VALUES (?,?,?,?,?,?)""",
-                    (None, body.biz_key, ts, body.amount, "拒收", created),
+                    """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,generation,created_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (None, body.biz_key, ts, body.amount, "拒收", None, created),
                 )
                 conn.execute(
                     """INSERT INTO reject_slips(window_name,biz_key,event_ts,amount,reason,created_at)
@@ -89,20 +89,26 @@ def ingest_event(body: EventIn, authorization: AuthHeader = None):
                 conn.commit()
                 raise HTTPException(409, "事件时间落在窗外且窗仍开启：拒收")
 
+            generation = int(w["generation"])
             cur = conn.execute(
-                """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,created_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (w["id"], body.biz_key, ts, body.amount, "窗内", created),
+                """INSERT INTO events(window_id,biz_key,event_ts,amount,disposition,generation,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (w["id"], body.biz_key, ts, body.amount, "窗内", generation, created),
             )
             write_audit(
                 conn,
                 user,
                 "ingest_in_window",
                 body.biz_key,
-                {"window_id": w["id"]},
+                {"window_id": w["id"], "generation": generation},
             )
             conn.commit()
-            return {"disposition": "窗内", "window_id": w["id"], "event_id": cur.lastrowid}
+            return {
+                "disposition": "窗内",
+                "window_id": w["id"],
+                "generation": generation,
+                "event_id": cur.lastrowid,
+            }
         finally:
             release(conn, lock_key, user)
             conn.commit()

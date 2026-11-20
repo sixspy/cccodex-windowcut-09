@@ -1,4 +1,8 @@
-"""关窗后物化。空桩预留：分区失败回滚 vs 保留成功分区。"""
+"""关窗后物化。空桩预留：分区失败回滚 vs 保留成功分区。
+
+世代口径（甲路径）：物化行必须钉住写入时的窗口 generation，
+对账只认当前世代行；跨代行整笔排除。
+"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -29,40 +33,51 @@ def materialize(
                 raise HTTPException(404, "窗口不存在")
             if w["status"] != "已关闭":
                 raise HTTPException(409, "未关窗不能物化")
+            generation = int(w["generation"])
+            if generation < 1:
+                raise HTTPException(409, "窗口世代非法，拒绝物化")
             now = datetime.now().isoformat(timespec="seconds")
             rows = conn.execute(
                 """SELECT COUNT(*) c, COALESCE(SUM(amount),0) s
-                   FROM events WHERE window_id=? AND disposition='窗内'""",
-                (wid,),
+                   FROM events
+                   WHERE window_id=? AND disposition='窗内' AND generation=?""",
+                (wid, generation),
             ).fetchone()
-            partition = body.partition_key or f"{w['name']}-g{w['generation']}"
+            partition = body.partition_key or f"{w['name']}-g{generation}"
             if body.fail_simulate:
                 write_audit(
                     conn,
                     user,
                     "materialize_fail_sim",
                     str(wid),
-                    {"partition": partition},
+                    {"partition": partition, "generation": generation},
                 )
                 conn.commit()
                 raise HTTPException(500, "模拟物化失败（夹具用）")
             conn.execute(
-                """INSERT INTO materializations(window_id,status,row_count,total_amount,partition_key,created_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (wid, "成功", rows["c"], rows["s"], partition, now),
+                """INSERT INTO materializations
+                   (window_id,status,row_count,total_amount,partition_key,generation,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (wid, "成功", rows["c"], rows["s"], partition, generation, now),
             )
             write_audit(
                 conn,
                 user,
                 "materialize_ok",
                 str(wid),
-                {"row_count": rows["c"], "total_amount": rows["s"], "partition": partition},
+                {
+                    "row_count": rows["c"],
+                    "total_amount": rows["s"],
+                    "partition": partition,
+                    "generation": generation,
+                },
             )
             conn.commit()
             return {
                 "row_count": rows["c"],
                 "total_amount": rows["s"],
                 "partition_key": partition,
+                "generation": generation,
             }
         finally:
             release(conn, lock_key, user)
@@ -74,12 +89,17 @@ def list_mats(authorization: AuthHeader = None):
     require_user(authorization)
     with connect() as conn:
         rows = conn.execute(
-            """SELECT m.*, w.name AS window_name
+            """SELECT m.*, w.name AS window_name, w.generation AS window_generation
                FROM materializations m
                JOIN windows w ON w.id=m.window_id
                ORDER BY m.id DESC"""
         ).fetchall()
-        return {"items": [dict(r) for r in rows]}
+        items = []
+        for r in rows:
+            item = dict(r)
+            item["stale"] = item["generation"] != item["window_generation"]
+            items.append(item)
+        return {"items": items}
 
 
 @router.post("/api/materializations/partition-stub")

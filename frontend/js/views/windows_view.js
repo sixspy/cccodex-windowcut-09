@@ -8,7 +8,7 @@ export const windowsViewTemplate = `
     <tbody>
       <tr v-for="w in windows" :key="w.id">
         <td>{{w.name}}</td>
-        <td>{{w.generation}}</td>
+        <td class="gen">g{{w.generation}}</td>
         <td>{{w.open_at}}</td>
         <td>{{w.close_at}}</td>
         <td>{{w.status}}</td>

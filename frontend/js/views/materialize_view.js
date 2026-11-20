@@ -1,14 +1,16 @@
 export const materializeViewTemplate = `
 <div class="card wide" v-show="tab===3">
   <h2>物化台账</h2>
-  <p class="muted">分区失败策略为空桩（整窗回滚 vs 保留成功分区）。</p>
+  <p class="muted">物化行钉住写入时世代；跨代行标“跨代”，对账整笔排除。分区失败策略为空桩（整窗回滚 vs 保留成功分区）。</p>
   <button class="ghost" @click="partitionStub">登记分区空桩</button>
   <table>
-    <thead><tr><th>窗口</th><th>状态</th><th>行数</th><th>金额</th><th>分区</th><th>时间</th></tr></thead>
+    <thead><tr><th>窗口</th><th>窗口世代</th><th>物化世代</th><th>状态</th><th>行数</th><th>金额</th><th>分区</th><th>时间</th></tr></thead>
     <tbody>
       <tr v-for="m in mats" :key="m.id">
         <td>{{m.window_name}}</td>
-        <td>{{m.status}}</td>
+        <td class="gen">g{{m.window_generation}}</td>
+        <td :class="m.stale?'late':'gen'">g{{m.generation}}</td>
+        <td>{{m.stale ? '跨代' : m.status}}</td>
         <td>{{m.row_count}}</td>
         <td>{{m.total_amount}}</td>
         <td>{{m.partition_key}}</td>

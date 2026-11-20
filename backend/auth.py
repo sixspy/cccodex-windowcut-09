@@ -28,6 +28,12 @@ def require_user(authorization: str | None) -> str:
     return user
 
 
+def session_holder(user: str, authorization: str | None) -> str:
+    """锁持有者按会话区分：同一账号两个页签也会互斥。"""
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    return f"{user}@{token[:8] or 'anon'}"
+
+
 AuthHeader = Annotated[str | None, Header()]
 
 

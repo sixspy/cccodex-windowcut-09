@@ -10,13 +10,15 @@ export const ingestViewTemplate = `
 </div>
 <div class="card" v-show="tab===1">
   <h2>最近事件</h2>
+  <p class="muted">窗内事件带写入时世代；对账只统计窗口当前世代。</p>
   <table>
-    <thead><tr><th>键</th><th>时间</th><th>金额</th><th>处置</th></tr></thead>
+    <thead><tr><th>键</th><th>时间</th><th>金额</th><th>世代</th><th>处置</th></tr></thead>
     <tbody>
       <tr v-for="e in (events||[]).slice(0,12)" :key="e.id">
         <td>{{e.biz_key}}</td>
         <td>{{e.event_ts}}</td>
         <td>{{e.amount}}</td>
+        <td class="gen">{{e.generation == null ? '—' : 'g'+e.generation}}</td>
         <td :class="e.disposition==='迟到桶'?'late':(e.disposition==='窗内'?'ok':'')">{{e.disposition}}</td>
       </tr>
     </tbody>

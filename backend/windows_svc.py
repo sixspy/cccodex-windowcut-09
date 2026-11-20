@@ -52,12 +52,19 @@ def close_window(wid: int, authorization: AuthHeader = None):
             if w["status"] == "已关闭":
                 return {"ok": True, "already": True}
             now = datetime.now().isoformat(timespec="seconds")
-            token = f"seal-{wid}-{w['generation']}-{now}"
+            generation = int(w["generation"])
+            token = f"seal-{wid}-{generation}-{now}"
             conn.execute(
                 "UPDATE windows SET status='已关闭', seal_token=? WHERE id=?",
                 (token, wid),
             )
-            write_audit(conn, user, "window_close", str(wid), {"seal_token": token})
+            write_audit(
+                conn,
+                user,
+                "window_close",
+                str(wid),
+                {"seal_token": token, "generation": generation},
+            )
             conn.commit()
             return {"ok": True, "seal_token": token}
         finally:
@@ -72,12 +79,24 @@ def get_window(wid: int, authorization: AuthHeader = None):
         w = conn.execute("SELECT * FROM windows WHERE id=?", (wid,)).fetchone()
         if not w:
             raise HTTPException(404, "窗口不存在")
+        generation = int(w["generation"])
+        # 世代口径：详情页与对账页同口径，只统计当前 generation。
         ev = conn.execute(
-            "SELECT COUNT(*) c, COALESCE(SUM(amount),0) s FROM events WHERE window_id=? AND disposition='窗内'",
-            (wid,),
+            """SELECT COUNT(*) c, COALESCE(SUM(amount),0) s
+               FROM events
+               WHERE window_id=? AND disposition='窗内' AND generation=?""",
+            (wid, generation),
         ).fetchone()
+        stale = conn.execute(
+            """SELECT COUNT(*) c FROM events
+               WHERE window_id=? AND disposition='窗内'
+                 AND (generation IS NULL OR generation<>?)""",
+            (wid, generation),
+        ).fetchone()["c"]
         return {
             "window": dict(w),
+            "generation": generation,
             "in_window_count": ev["c"],
             "in_window_amount": ev["s"],
+            "excluded_cross_generation_events": stale,
         }

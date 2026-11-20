@@ -22,6 +22,8 @@ createApp({
     const mats = ref([]);
     const recon = ref({});
     const reconAll = ref([]);
+    const reconWid = ref(null);
+    const reconContended = ref(false);
     const lateItems = ref([]);
     const lateSummary = ref({});
     const audits = ref([]);
@@ -79,43 +81,45 @@ createApp({
 
     async function refresh() {
       if (!token.value) return;
-      const w = await api.get("/api/windows");
-      if (w === null) return;
+      // 并行拉取只读面，再串行做占锁的对账，避免刷新自身制造争用
+      const [w, e, m, late, ls, ra, au, ct, lk, hd, d] = await Promise.all([
+        api.get("/api/windows"),
+        api.get("/api/events"),
+        api.get("/api/materializations"),
+        api.get("/api/late-bucket"),
+        api.get("/api/late-bucket/summary"),
+        api.get("/api/reconcile"),
+        api.get("/api/audit?limit=50"),
+        api.get("/api/contention"),
+        api.get("/api/locks"),
+        api.get("/api/holds"),
+        api.get("/api/dashboard"),
+      ]);
+      if ([w, e, m, late, ls, ra, au, ct, lk, hd, d].includes(null)) return;
       windows.value = Array.isArray(w.body.items) ? w.body.items : [];
-      const e = await api.get("/api/events");
-      if (e === null) return;
       events.value = Array.isArray(e.body.items) ? e.body.items : [];
-      const m = await api.get("/api/materializations");
-      if (m === null) return;
       mats.value = Array.isArray(m.body.items) ? m.body.items : [];
-      const late = await api.get("/api/late-bucket");
-      if (late === null) return;
       lateItems.value = Array.isArray(late.body.items) ? late.body.items : [];
-      const ls = await api.get("/api/late-bucket/summary");
-      if (ls === null) return;
       lateSummary.value = ls.body || {};
-      const ra = await api.get("/api/reconcile");
-      if (ra === null) return;
       reconAll.value = Array.isArray(ra.body.items) ? ra.body.items : [];
-      const au = await api.get("/api/audit?limit=50");
-      if (au === null) return;
       audits.value = Array.isArray(au.body.items) ? au.body.items : [];
-      const ct = await api.get("/api/contention");
-      if (ct === null) return;
       contention.value = Array.isArray(ct.body.items) ? ct.body.items : [];
-      const lk = await api.get("/api/locks");
-      if (lk === null) return;
       locks.value = Array.isArray(lk.body.items) ? lk.body.items : [];
-      const hd = await api.get("/api/holds");
-      if (hd === null) return;
       holds.value = Array.isArray(hd.body.items) ? hd.body.items : [];
-      const d = await api.get("/api/dashboard");
-      if (d === null) return;
       dash.value = d.body || {};
       if (windows.value.length) {
-        const q = await api.get("/api/reconcile/" + windows.value[0].id);
-        if (q === null) return;
-        recon.value = q.body && typeof q.body === "object" ? q.body : {};
+        const target =
+          windows.value.find((x) => x.id === reconWid.value) || windows.value[0];
+        reconWid.value = target.id;
+        const q = await api.get("/api/reconcile/" + target.id);
+        // 后到争用：不覆盖已展示的对账，保持页面与锁结果同态
+        if (q && q.ok) {
+          recon.value = q.body && typeof q.body === "object" ? q.body : {};
+          reconContended.value = false;
+        } else if (q && !q.ok) {
+          // 自动刷新遇到争用只挂提示，不篡改已展示结果
+          reconContended.value = true;
+        }
       }
     }
 
@@ -144,8 +148,31 @@ createApp({
     }
 
     async function loadRecon(id) {
+      actionErr.value = "";
+      reconWid.value = id;
       const q = await api.get("/api/reconcile/" + id);
-      if (q) recon.value = q.body || {};
+      if (!q) return;
+      if (!q.ok) {
+        // 后到只记争用：不展示对账结果，避免页面与后端口径不一致
+        reconContended.value = true;
+        actionErr.value = q.body.detail || "对账未完成";
+        await refresh();
+        return;
+      }
+      reconContended.value = false;
+      recon.value = q.body || {};
+      await refresh();
+    }
+
+    function auditGeneration(a) {
+      try {
+        const p = JSON.parse(a.payload || "{}");
+        if (p.generation != null) return "g" + p.generation;
+        if (p.stale_generation != null) return "跨代 g" + p.stale_generation;
+      } catch (e) {
+        /* 非法 payload 不阻断页面 */
+      }
+      return "—";
     }
 
     async function reopenStub(id) {
@@ -202,6 +229,7 @@ createApp({
       mats,
       recon,
       reconAll,
+      reconContended,
       lateItems,
       lateSummary,
       audits,
@@ -221,6 +249,7 @@ createApp({
       closeWin,
       materialize,
       loadRecon,
+      auditGeneration,
       reopenStub,
       promoteLate,
       discardLate,
@@ -250,7 +279,7 @@ createApp({
       <div class="hero-side">
         <div>迟到桶</div>
         <div class="n">{{lateSummary.count||lateEvents.length}}</div>
-        <div style="opacity:.8;margin-top:8px">对账对齐：{{recon.aligned}}</div>
+        <div style="opacity:.8;margin-top:8px">对账对齐：{{recon.aligned}} · 世代 g{{recon.window_generation || '-'}}</div>
         <div style="opacity:.8">争用 {{dash.contention||0}} · 暂存 {{dash.holds||0}}</div>
         <div style="margin-top:16px;font-size:12px;opacity:.75">{{user}} · <a href="#" style="color:#fff" @click.prevent="logout">退出</a></div>
       </div>
